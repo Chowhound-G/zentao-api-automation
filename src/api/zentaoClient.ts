@@ -274,6 +274,132 @@ async function deleteTestcase(request, token, caseID) {
   return res;
 }
 
+/**
+ * ============ 测试任务（testtask）相关 ============
+ *
+ * 重要：testtask 的 REST API (/api.php/v1/) 在当前禅道实例上是残缺的
+ * （创建返回假 200，关联用例 404）。因此 testtask 走「传统表单接口」
+ * （/index.php?m=testtask&f=xxx），鉴权用 session cookie（keepLogin），
+ * 与 REST Token 是两套独立体系。
+ *
+ * 已实测可用：
+ * - 登录：GET 登录页 → POST m=user&f=login（keepLogin=on）→ 拿 za/zp cookie
+ * - 创建测试单：POST m=testtask&f=create → {"result":"success","id":N}
+ * - 删除测试单：GET  m=testtask&f=delete&taskID=N → {"result":"success"}
+ *
+ * 暂不可用（接口未摸透，需补充真实抓包）：
+ * - 关联用例 linkCase：依赖查询上下文 param=myQueryID
+ * - 执行用例 runCase：真实 form data 未知
+ * - 测试报告 testreport：依赖前序步骤
+ *
+ * 因为传统接口返回 HTML 而非 JSON，这里统一用 Playwright 的 APIRequestContext
+ * 并手动管理 Cookie。Playwright 的 request.newContext() 会自动管理 cookie jar。
+ */
+
+/**
+ * 传统接口登录，返回一个已建立 session 的 APIRequestContext。
+ * 调用方负责在用完后 ctx.dispose()。
+ *
+ * 流程：
+ * 1. GET 登录页（建立 zentaosid）
+ * 2. POST m=user&f=login（keepLogin=on）→ 写入 za/zp 持久 cookie
+ */
+async function loginSession(playwright) {
+  const base = getBaseURL(process.env.ZENTAO_URL);
+  const ctx = await playwright.request.newContext({
+    baseURL: base,
+    extraHTTPHeaders: { 'X-Requested-With': 'XMLHttpRequest' },
+  });
+
+  // 1. 建立会话
+  await ctx.get('/index.php?m=user&f=login');
+
+  // 2. 登录（keepLogin=on 拿持久 cookie）
+  const form = new URLSearchParams();
+  form.set('account', process.env.ZENTAO_USERNAME);
+  form.set('password', process.env.ZENTAO_PASSWORD);
+  form.set('passwordStrength', '1');
+  form.set('referer', '/zentao/');
+  form.set('keepLogin', 'on');
+
+  const loginRes = await ctx.post('/index.php?m=user&f=login', {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    data: form.toString(),
+  });
+
+  // 校验：登录成功响应是 <script>self.location='/zentao/'</script>
+  const body = await loginRes.text();
+  if (!body.includes("self.location='/zentao/'") && !body.includes('self.location="/zentao/"')) {
+    await ctx.dispose();
+    throw new Error(`传统接口登录失败（未跳转到首页）: ${body.slice(0, 200)}`);
+  }
+
+  return ctx;
+}
+
+/**
+ * 创建测试单（传统接口）。
+ * @param {object} ctx  由 loginSession 返回的 APIRequestContext
+ * @param {object} payload  表单字段，至少含 { name, product, execution, build }
+ * @returns {Promise<{id:number}>}  返回 { result, id }
+ *
+ * 实测成功响应：{"result":"success","message":"保存成功","id":N}
+ */
+async function createTesttask(ctx, payload) {
+  const form = new URLSearchParams();
+  const defaults = {
+    product: 1,
+    execution: 3,
+    build: 1,
+    'type[]': 'integrate',
+    owner: '',
+    'members[]': '',
+    begin: new Date().toISOString().slice(0, 10),
+    end: new Date().toISOString().slice(0, 10),
+    status: 'doing',
+    testreport: 0,
+    pri: 3,
+    desc: '',
+  };
+  Object.entries({ ...defaults, ...payload }).forEach(([k, v]) => form.set(k, String(v)));
+  // uid 是禅道文件上传用的临时标识，这里给个唯一值
+  form.set('uid', `api-${Date.now()}`);
+
+  const res = await ctx.post('/index.php?m=testtask&f=create&product=1&zin=1', {
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Referer: '/index.php?m=testtask&f=create&product=1',
+    },
+    data: form.toString(),
+  });
+
+  const text = await res.text();
+  try {
+    const json = JSON.parse(text);
+    if (json.result !== 'success') {
+      throw new Error(`创建测试单失败: ${json.message || text.slice(0, 200)}`);
+    }
+    return json;
+  } catch (e) {
+    if (e.message.includes('创建测试单失败')) throw e;
+    throw new Error(`创建测试单响应解析失败: ${text.slice(0, 200)}`);
+  }
+}
+
+/**
+ * 删除测试单（传统接口）。
+ */
+async function deleteTesttask(ctx, taskID) {
+  const res = await ctx.get(`/index.php?m=testtask&f=delete&taskID=${taskID}`);
+  const text = await res.text();
+  try {
+    const json = JSON.parse(text);
+    return json;
+  } catch {
+    return { result: 'unknown', raw: text.slice(0, 200) };
+  }
+}
+
 module.exports = {
   getBaseURL,
   getProductID,
@@ -281,12 +407,16 @@ module.exports = {
   ensureToken,
   createBug,
   createDefaultBug,
-  // 测试用例相关
+  // 测试用例相关（REST API）
   listTestcases,
   createTestcase,
   createDefaultTestcase,
   getTestcase,
   deleteTestcase,
+  // 测试任务相关（传统接口，需 session）
+  loginSession,
+  createTesttask,
+  deleteTesttask,
   loadCachedToken,
   saveCachedToken,
   clearCachedToken,

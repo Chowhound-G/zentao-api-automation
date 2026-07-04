@@ -23,12 +23,15 @@
                   └─────  遇 401 自动重登并重试  ◄────────┘
 ```
 
-支持两类对象：
+支持三类对象：
 
 - **Bug**：创建缺陷（`createBug` / `createDefaultBug`）
-- **测试用例 testcase**：增/查/删（`listTestcases` / `createDefaultTestcase` / `getTestcase` / `deleteTestcase`）
+- **测试用例 testcase**：增/查/删（REST API）
+- **测试任务 testtask**：创建/删除测试单（传统表单接口）
 
-> ⏳ **执行用例（testtask）暂未实现**：禅道执行用例必须通过测试单（testtask）体系，且 testtask 依赖"版本 build"，而当前测试环境无创建 build 的权限。后续权限到位再补。
+> ⚠️ **testtask 用两套鉴权体系**：testcase/bug 用 REST Token 头，testtask 走传统接口用 session cookie（`keepLogin`）。详见下文「实测发现」。
+
+> ⏳ **testtask 的关联用例 / 执行用例暂未实现**：禅道 REST API 对 testtask 支持残缺（返回假 200），传统接口的 `linkCase`（需查询上下文 param）/ `runCase`（真实 form data 未知）尚未摸透，待补充真实抓包后再实现。
 
 ## 快速开始
 
@@ -63,6 +66,9 @@ npx playwright test submit-wenxuan-bugs   # 批量提交缺陷
 
 # 测试用例相关
 npx playwright test testcase-api      # 用例增/查/删
+
+# 测试任务相关
+npx playwright test testtask-api      # 创建/删除测试单（传统接口）
 ```
 
 首次运行会在项目根目录生成 `.token` 文件缓存登录态，后续请求复用，避免重复登录。该文件已被 `.gitignore` 忽略。
@@ -79,6 +85,7 @@ src/
 tests/
 ├── bug-api.spec.ts              # Bug API 用例：ensureToken → createDefaultBug
 ├── testcase-api.spec.js         # 测试用例 API：增/查/删
+├── testtask-api.spec.js         # 测试任务 API：创建/删除测试单（传统接口）
 ├── bug.spec.ts                  # 原 UI 用例（保留）
 ├── submit-wenxuan-bugs.spec.js  # 批量提交缺陷到禅道（数据驱动）
 └── example.spec.ts
@@ -94,12 +101,16 @@ docs/
 | **Bug** | |
 | `createBug(request, token, productID, payload)` | 创建 Bug，遇 401 自动重登重试 |
 | `createDefaultBug(request, token, productID, title)` | 用合理默认字段创建 Bug |
-| **测试用例 testcase** | |
+| **测试用例 testcase**（REST API） | |
 | `listTestcases(request, token, productID, options)` | 查询产品下的用例列表（含分页） |
 | `createTestcase(request, token, productID, payload)` | 创建用例，遇 401 自动重登重试 |
 | `createDefaultTestcase(request, token, productID, title, overrides?)` | 用默认字段创建用例（可覆盖字段） |
 | `getTestcase(request, token, caseID)` | 获取用例详情 |
 | `deleteTestcase(request, token, caseID)` | 删除用例 |
+| **测试任务 testtask**（传统接口） | |
+| `loginSession(playwright)` | 传统接口登录，返回带 session cookie 的 APIRequestContext |
+| `createTesttask(ctx, payload)` | 创建测试单（需先 loginSession），返回 `{result,id}` |
+| `deleteTesttask(ctx, taskID)` | 删除测试单 |
 | **通用** | |
 | `getBaseURL(envURL)` | 从 `ZENTAO_URL` 提取 base，如 `https://host/zentao` |
 | `getProductID(envURL)` | 从 URL 的 base64 `referer` 解析 productID，默认 `1` |
@@ -120,6 +131,9 @@ docs/
 | 用例 `steps` | — | 字符串或 `[{desc, expect}]` 数组均可 |
 | 用例创建成功状态码 | 201 | **200**（注意与 Bug 不同） |
 | 用例 id 格式 | 列表返回 `case_300` | 创建/删除用数字 `300` |
+| testtask REST API | `POST /products/1/testtasks` | **残缺**（返回假 200），必须用传统接口 `m=testtask&f=create` |
+| testtask 鉴权 | REST Token 头 | **传统 session cookie**（`keepLogin=on` 拿 za/zp） |
+| 传统接口 Referer | 可省略 | **必填**，否则返回 HTML 登录页而非 JSON |
 
 ## 安全说明
 
