@@ -155,6 +155,125 @@ async function createDefaultBug(request, token, productID, title) {
   return createBug(request, token, productID, payload);
 }
 
+/**
+ * ============ 测试用例（testcase）相关 ============
+ *
+ * 实测结论（与 Bug 接口略有差异）：
+ * - 列表：GET /products/{productID}/testcases，返回 { total, testcases: [...] }
+ * - 创建：POST /products/{productID}/testcases，成功返回 200（注意不是 201）+ { id }
+ * - 必填：title + type + pri + steps
+ * - type 取值：interface（接口测试）、feature（功能测试）、performance 等
+ * - steps 可为字符串或 [{ desc, expect }] 数组
+ * - 用例 id 在列表里形如 "case_300"，但创建/删除用数字 id（如 300）
+ */
+
+/**
+ * 获取产品下的测试用例列表。
+ * @param {object} request  Playwright request fixture 或 APIRequestContext
+ * @param {string} token
+ * @param {number} productID
+ * @param {object} [options] { page, limit }
+ */
+async function listTestcases(request, token, productID, options = {}) {
+  const base = getBaseURL(process.env.ZENTAO_URL);
+  const { page = 1, limit = 20 } = options;
+  const res = await request.get(
+    `${base}/api.php/v1/products/${productID}/testcases?page=${page}&limit=${limit}`,
+    { headers: authHeaders(token) }
+  );
+
+  if (res.status() === 401) {
+    const newToken = await login(request);
+    saveCachedToken(newToken);
+    return request.get(
+      `${base}/api.php/v1/products/${productID}/testcases?page=${page}&limit=${limit}`,
+      { headers: authHeaders(newToken) }
+    );
+  }
+  return res;
+}
+
+/**
+ * 创建单个测试用例。遇 401 自动重登重试。
+ * @param {object} payload 完整字段，至少含 { title, type, pri, steps }
+ */
+async function createTestcase(request, token, productID, payload) {
+  const base = getBaseURL(process.env.ZENTAO_URL);
+  const url = `${base}/api.php/v1/products/${productID}/testcases`;
+
+  let res = await request.post(url, {
+    headers: authHeaders(token),
+    data: payload,
+  });
+
+  if (res.status() === 401) {
+    const newToken = await login(request);
+    saveCachedToken(newToken);
+    res = await request.post(url, {
+      headers: authHeaders(newToken),
+      data: payload,
+    });
+  }
+  return res;
+}
+
+/**
+ * 使用默认字段创建测试用例。
+ * 标题由调用方传入，type/pri/steps 用合理默认值。
+ * @param {string} title 用例标题
+ * @param {object} [overrides] 覆盖默认字段，如 { type:'feature', steps:[{desc,expect}] }
+ */
+async function createDefaultTestcase(request, token, productID, title, overrides = {}) {
+  const payload = {
+    title,
+    type: 'interface', // 用例类型：接口测试
+    pri: 1, // 优先级（必填）
+    stage: '【单元测试阶段】', // 测试阶段
+    precondition: '', // 前置条件
+    steps: `1. 操作步骤\n预期：${title}`, // 用例步骤（字符串形式）
+    ...overrides,
+  };
+  return createTestcase(request, token, productID, payload);
+}
+
+/**
+ * 获取单个测试用例详情。
+ */
+async function getTestcase(request, token, caseID) {
+  const base = getBaseURL(process.env.ZENTAO_URL);
+  const res = await request.get(`${base}/api.php/v1/testcases/${caseID}`, {
+    headers: authHeaders(token),
+  });
+
+  if (res.status() === 401) {
+    const newToken = await login(request);
+    saveCachedToken(newToken);
+    return request.get(`${base}/api.php/v1/testcases/${caseID}`, {
+      headers: authHeaders(newToken),
+    });
+  }
+  return res;
+}
+
+/**
+ * 删除单个测试用例。
+ */
+async function deleteTestcase(request, token, caseID) {
+  const base = getBaseURL(process.env.ZENTAO_URL);
+  const res = await request.delete(`${base}/api.php/v1/testcases/${caseID}`, {
+    headers: authHeaders(token),
+  });
+
+  if (res.status() === 401) {
+    const newToken = await login(request);
+    saveCachedToken(newToken);
+    return request.delete(`${base}/api.php/v1/testcases/${caseID}`, {
+      headers: authHeaders(newToken),
+    });
+  }
+  return res;
+}
+
 module.exports = {
   getBaseURL,
   getProductID,
@@ -162,6 +281,12 @@ module.exports = {
   ensureToken,
   createBug,
   createDefaultBug,
+  // 测试用例相关
+  listTestcases,
+  createTestcase,
+  createDefaultTestcase,
+  getTestcase,
+  deleteTestcase,
   loadCachedToken,
   saveCachedToken,
   clearCachedToken,
