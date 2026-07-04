@@ -1,55 +1,93 @@
 const { test, expect, request } = require('@playwright/test');
-const { loginSession, createTesttask, deleteTesttask } = require('../src/api/zentaoClient');
+const {
+  loginSession,
+  createTesttask,
+  deleteTesttask,
+  linkCases,
+  runCase,
+  ensureToken,
+  createDefaultTestcase,
+  getProductID,
+} = require('../src/api/zentaoClient');
 
 /**
  * 测试任务（testtask）API 用例。
  *
- * 注意：testtask 走禅道「传统表单接口」，鉴权用 session cookie（非 REST Token），
- * 因此这里用 request.request 直接创建独立 context，不依赖 REST 的 ensureToken。
+ * testtask 走禅道「传统表单接口」，鉴权用 session cookie（非 REST Token）。
+ * 关联用例 / 执行用例 也走传统接口。
  */
+const PRODUCT_ID = getProductID(process.env.ZENTAO_URL);
+const FIXED_TASK_ID = 2; // 用已存在的测试单做关联/执行（避免污染）
 let ctx;
-let createdTaskID;
+let token;
 
 test.beforeAll(async () => {
-  // 传统接口登录，建立带 keepLogin cookie 的 session
   ctx = await loginSession(request);
+  token = await ensureToken(request);
 });
 
 test.afterAll(async () => {
-  // 清理探测创建的测试单
-  if (createdTaskID) {
-    await deleteTesttask(ctx, createdTaskID);
-  }
-  if (ctx) {
-    await ctx.dispose();
-  }
+  if (ctx) await ctx.dispose();
 });
 
-test('创建测试单（传统接口）', async () => {
+test('创建并删除测试单（传统接口）', async () => {
   const name = `[API自动化] 测试单-${Date.now()}`;
   const result = await createTesttask(ctx, { name, product: 1, execution: 3, build: 1 });
 
   expect(result.result).toBe('success');
   expect(result.id).toBeTruthy();
+  console.log(`✅ 创建测试单成功: #${result.id}`);
 
-  createdTaskID = result.id; // 记录供 afterAll 清理
-  console.log(`✅ 创建测试单成功: #${result.id} "${name}"`);
+  // 清理
+  const del = await deleteTesttask(ctx, result.id);
+  expect(del.result).toBe('success');
+  console.log(`✅ 删除测试单 #${result.id}`);
 });
 
-test('创建测试单后会话保持有效（连续创建）', async () => {
-  // 验证 session 的持久性：同一个 ctx 连续创建两个
-  const name1 = `[API自动化] 连续测试单1-${Date.now()}`;
-  const name2 = `[API自动化] 连续测试单2-${Date.now()}`;
+test('关联用例到测试单 + 执行用例', async () => {
+  // 1. 先创建一个临时用例
+  const caseTitle = `[API自动化] 关联执行用例-${Date.now()}`;
+  const createRes = await createDefaultTestcase(request, token, PRODUCT_ID, caseTitle);
+  const caseData = await createRes.json();
+  const caseID = caseData.id;
+  const version = caseData.version || 1;
+  console.log(`✅ 创建临时用例 #${caseID}`);
 
-  const r1 = await createTesttask(ctx, { name: name1, product: 1, execution: 3, build: 1 });
-  const r2 = await createTesttask(ctx, { name: name2, product: 1, execution: 3, build: 1 });
+  try {
+    // 2. 关联到固定测试单
+    const linkRes = await linkCases(ctx, FIXED_TASK_ID, [{ case: caseID, version }]);
+    expect(linkRes.result).toBe('success');
+    console.log(`✅ 关联到 testtask#${FIXED_TASK_ID}`);
 
-  expect(r1.result).toBe('success');
-  expect(r2.result).toBe('success');
+    // 3. 查 testtask 详情拿到 run 记录 id
+    // 注意：testcases 列表项有 { id, case, caseVersion }，
+    //   - id 是关联记录 id（即 runCase 要的 runID）
+    //   - case 是真正的用例 id
+    const detailRes = await ctx.get(
+      `/api.php/v1/testtasks/${FIXED_TASK_ID}`,
+      { headers: { Token: token } }
+    );
+    const taskDetail = await detailRes.json();
+    const runRec = (taskDetail.testcases || []).find(
+      (c) => String(c.case) === String(caseID)
+    );
+    const runID = runRec && runRec.id;
+    expect(runID).toBeTruthy();
+    console.log(`✅ run 记录 id = ${runID} (case=${caseID})`);
 
-  // 清理这两个（用数组记录，afterAll 只清理最后一个）
-  await deleteTesttask(ctx, r1.id);
-  await deleteTesttask(ctx, r2.id);
-
-  console.log(`✅ 连续创建成功: #${r1.id}、#${r2.id}（已清理）`);
+    // 4. 执行用例（标记 pass）
+    const runResult = await runCase(ctx, {
+      runID,
+      caseID,
+      version,
+      result: 'pass',
+      real: `[API自动化] 执行通过`,
+    });
+    expect(runResult.result).toBe('success');
+    console.log(`✅ 执行用例结果: pass`);
+  } finally {
+    // 清理用例（关联记录会级联删除）
+    await require('../src/api/zentaoClient').deleteTestcase(request, token, caseID);
+    console.log(`✅ 清理用例 #${caseID}`);
+  }
 });

@@ -400,6 +400,95 @@ async function deleteTesttask(ctx, taskID) {
   }
 }
 
+/**
+ * 关联用例到测试单（传统接口）。
+ * @param {object} ctx     loginSession 返回的 context
+ * @param {number} taskID  测试单 id
+ * @param {Array<{case:number, version:number}>} cases  要关联的用例（需带 version）
+ * @returns {Promise<object>} { result, ... }
+ *
+ * 实测：字段格式为 case[id]=id + version[id]=version（不是 JSON 数组）。
+ * 成功响应：{"result":"success","message":"保存成功"}
+ */
+async function linkCases(ctx, taskID, cases) {
+  const form = new URLSearchParams();
+  cases.forEach(({ case: caseID, version }) => {
+    form.set(`case[${caseID}]`, String(caseID));
+    form.set(`version[${caseID}]`, String(version || 1));
+  });
+
+  const res = await ctx.post(
+    `/index.php?m=testtask&f=linkCase&taskID=${taskID}&type=all&param=myQueryID`,
+    {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Referer: `/index.php?m=testtask&f=caseTasks&taskID=${taskID}`,
+      },
+      data: form.toString(),
+    }
+  );
+
+  const text = await res.text();
+  try {
+    const json = JSON.parse(text);
+    if (json.result !== 'success') {
+      throw new Error(`关联用例失败: ${json.message || text.slice(0, 200)}`);
+    }
+    return json;
+  } catch (e) {
+    if (e.message.includes('关联用例失败')) throw e;
+    throw new Error(`关联用例响应解析失败: ${text.slice(0, 200)}`);
+  }
+}
+
+/**
+ * 执行单个用例并记录结果（传统接口）。
+ * @param {object} ctx     loginSession 返回的 context
+ * @param {object} params  { runID, caseID, version, result, real }
+ *   - runID:   关联记录 id（用例关联到 testtask 后生成的 testtask_run id，非 caseId）
+ *   - caseID:  用例 id
+ *   - version: 用例版本号
+ *   - result:  执行结果，'pass' | 'fail' | 'blocked'
+ *   - real:    实际结果描述（必填，fail 时尤其重要）
+ * @returns {Promise<object>} { result, ... }
+ *
+ * 关键：runID 不是 caseID。先用 linkCases 关联用例，再查 testtask 详情
+ * 拿到对应 run 记录的 id。
+ *
+ * 成功响应：{"result":"success","load":true,"closeModal":true}
+ */
+async function runCase(ctx, params) {
+  const { runID, caseID, version = 1, result = 'pass', real = '' } = params;
+  const form = new URLSearchParams();
+  form.set('result[0]', result);
+  form.set('real[0]', real);
+  form.set('case', String(caseID));
+  form.set('version', String(version));
+
+  const res = await ctx.post(
+    `/index.php?m=testtask&f=runCase&id=${runID}`,
+    {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Referer: `/index.php?m=testtask&f=runCase&id=${runID}`,
+      },
+      data: form.toString(),
+    }
+  );
+
+  const text = await res.text();
+  try {
+    const json = JSON.parse(text);
+    if (json.result !== 'success') {
+      throw new Error(`执行用例失败: ${json.message || text.slice(0, 200)}`);
+    }
+    return json;
+  } catch (e) {
+    if (e.message.includes('执行用例失败')) throw e;
+    throw new Error(`执行用例响应解析失败: ${text.slice(0, 200)}`);
+  }
+}
+
 module.exports = {
   getBaseURL,
   getProductID,
@@ -417,6 +506,8 @@ module.exports = {
   loginSession,
   createTesttask,
   deleteTesttask,
+  linkCases,
+  runCase,
   loadCachedToken,
   saveCachedToken,
   clearCachedToken,

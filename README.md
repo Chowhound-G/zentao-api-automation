@@ -27,11 +27,23 @@
 
 - **Bug**：创建缺陷（`createBug` / `createDefaultBug`）
 - **测试用例 testcase**：增/查/删（REST API）
-- **测试任务 testtask**：创建/删除测试单（传统表单接口）
+- **测试任务 testtask**：创建/删除测试单 + 关联用例 + 执行用例（传统表单接口）
 
 > ⚠️ **testtask 用两套鉴权体系**：testcase/bug 用 REST Token 头，testtask 走传统接口用 session cookie（`keepLogin`）。详见下文「实测发现」。
 
-> ⏳ **testtask 的关联用例 / 执行用例暂未实现**：禅道 REST API 对 testtask 支持残缺（返回假 200），传统接口的 `linkCase`（需查询上下文 param）/ `runCase`（真实 form data 未知）尚未摸透，待补充真实抓包后再实现。
+### testtask 完整执行流程
+
+```
+loginSession(keepLogin)
+        │
+        ▼
+createTesttask ──► linkCases(用例+version) ──► 查 testtask 详情拿 runID
+                                                   │
+                                                   ▼
+                                            runCase(result=pass/fail)
+```
+
+**关键**：执行用例的 `runID` 不是 `caseID`——它是用例关联到测试单后生成的运行记录 id。查询 testtask 详情时，`testcases[].id` 是 runID，`testcases[].case` 才是用例 id。
 
 ## 快速开始
 
@@ -111,6 +123,8 @@ docs/
 | `loginSession(playwright)` | 传统接口登录，返回带 session cookie 的 APIRequestContext |
 | `createTesttask(ctx, payload)` | 创建测试单（需先 loginSession），返回 `{result,id}` |
 | `deleteTesttask(ctx, taskID)` | 删除测试单 |
+| `linkCases(ctx, taskID, cases)` | 关联用例到测试单，cases: `[{case, version}]` |
+| `runCase(ctx, {runID, caseID, version, result, real})` | 执行用例记录结果（pass/fail/blocked） |
 | **通用** | |
 | `getBaseURL(envURL)` | 从 `ZENTAO_URL` 提取 base，如 `https://host/zentao` |
 | `getProductID(envURL)` | 从 URL 的 base64 `referer` 解析 productID，默认 `1` |
@@ -134,6 +148,9 @@ docs/
 | testtask REST API | `POST /products/1/testtasks` | **残缺**（返回假 200），必须用传统接口 `m=testtask&f=create` |
 | testtask 鉴权 | REST Token 头 | **传统 session cookie**（`keepLogin=on` 拿 za/zp） |
 | 传统接口 Referer | 可省略 | **必填**，否则返回 HTML 登录页而非 JSON |
+| 关联用例字段 | JSON 数组 | `case[id]=id` + `version[id]=v`（表单格式，须带 Referer） |
+| runID 来源 | caseID | testtask 详情的 `testcases[].id`（关联记录 id，非用例 id） |
+| 执行用例字段 | result/real | `result[0]=pass` + `real[0]=描述` + `case` + `version` |
 
 ## 安全说明
 
