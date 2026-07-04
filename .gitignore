@@ -1,0 +1,15 @@
+
+# Playwright
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+
+# 凭据：忽略所有 .env* 变体（含 .env、.env copy、.env.local 等），仅保留 .env.example 模板
+.env*
+!.env.example
+
+# Token 缓存（API 自动化运行时生成）
+.token
